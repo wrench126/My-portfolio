@@ -1,0 +1,540 @@
+#include <iostream>
+#include <string>
+#include <chrono>
+#include <thread>
+#include <windows.h>
+#include <fstream>
+#include <vector>
+
+using namespace std;
+
+void setColor(int color) {
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    SetConsoleTextAttribute(hConsole, color);
+}
+
+const int COLOR_DEFAULT = 7;
+const int COLOR_TITLE = 11;
+const int COLOR_SUCCESS = 10;
+const int COLOR_ERROR = 12;
+const int COLOR_PROMPT = 14;
+
+void typeEffect(const string& text, int delay = 30, int color = COLOR_DEFAULT);
+void clearScreen();
+void welcomeScreen();
+void loadingDots();
+void progressBarAnimation(int length = 20, int delay = 50);
+void MainMenu();
+void UserDashboard(const string& username);
+void drawBorder(int width, char borderChar = '=');
+
+// FileManager class to handle CSV operations
+class FileManager {
+public:
+    static int getLastID(const string& filename) {
+        fstream file(filename, ios::in);
+        string line;
+        int lastID = 0;
+
+        while (getline(file, line)) {
+            size_t commaPos = line.find(',');
+            if (commaPos != string::npos) {
+                try {
+                    int id = stoi(line.substr(0, commaPos));
+                    if (id > lastID) lastID = id;
+                } catch (...) {
+                    continue;
+                }
+            }
+        }
+        file.close();
+        return lastID;
+    }
+
+    static bool checkLogin(const string& filename, const string& username, const string& password) {
+        ifstream file(filename);
+        string line;
+
+        while (getline(file, line)) {
+            size_t pos;
+            int fieldCount = 0;
+            string fields[8];
+
+            while ((pos = line.find(',')) != string::npos && fieldCount < 7) {
+                fields[fieldCount++] = line.substr(0, pos);
+                line.erase(0, pos + 1);
+            }
+            fields[fieldCount] = line;
+
+            if (fields[1] == username && fields[7] == password)
+                return true;
+        }
+        file.close();
+        return false;
+    }
+
+    static vector<string> getUserInfo(const string& username) {
+        ifstream file("users.csv");
+        string line;
+        vector<string> userInfo;
+
+        while (getline(file, line)) {
+            size_t pos;
+            int fieldCount = 0;
+            string fields[8];
+
+            while ((pos = line.find(',')) != string::npos && fieldCount < 7) {
+                fields[fieldCount++] = line.substr(0, pos);
+                line.erase(0, pos + 1);
+            }
+            fields[fieldCount] = line;
+
+            if (fields[1] == username) {
+                for (int i = 0; i <= fieldCount; ++i) {
+                    userInfo.push_back(fields[i]);
+                }
+                break;
+            }
+        }
+        file.close();
+        return userInfo;
+    }
+};
+
+// Abstract base class Person
+class Person {
+protected:
+    string name, password, address;
+    int id;
+public:
+    virtual void fillInfo() = 0;
+    virtual void saveInfo(const string& filename) = 0;
+    virtual ~Person() = default;
+
+    // Getters and Setters
+    string getName() const { return name; }
+    void setName(const string& newName) { name = newName; }
+    string getPassword() const { return password; }
+    void setPassword(const string& newPassword) { password = newPassword; }
+    string getAddress() const { return address; }
+    void setAddress(const string& newAddress) { address = newAddress; }
+    int getID() const { return id; }
+};
+
+class User : public Person {
+private:
+    string gender, country, tel;
+    int age;
+    string confirmPassword;
+    static int idCounter;
+
+public:
+    User() : age(0) {
+        id = ++idCounter;
+    }
+
+    static void loadLastID() {
+        idCounter = FileManager::getLastID("users.csv");
+    }
+
+    void fillInfo() override;
+    void saveInfo(const string& filename) override;
+};
+
+int User::idCounter = 0;
+
+void User::fillInfo() {
+    clearScreen();
+    drawBorder(40);
+    typeEffect("     User Registration     \n", 30, COLOR_TITLE);
+    drawBorder(40);
+    typeEffect("\nPlease fill in your information...\n\n", 20, COLOR_PROMPT);
+
+    do {
+        typeEffect("Username: ", 20, COLOR_PROMPT);
+        getline(cin, name);
+        if (name.empty())
+            typeEffect("------------------------- \nUsername required.\n------------------------- \n", 20, COLOR_ERROR);
+        else if (name.length() < 8 || name.length() > 100)
+            typeEffect("------------------------- \nInvalid username! Must be 8-100 characters.\n------------------------- \n", 20, COLOR_ERROR);
+    } while (name.empty() || name.length() < 8 || name.length() > 100);
+
+    do {
+        typeEffect("Password: ", 20, COLOR_PROMPT);
+        getline(cin, password);
+        if (password.empty())
+            typeEffect("------------ \nPassword required!\n------------ \n", 20, COLOR_ERROR);
+        else if (password.length() < 8)
+            typeEffect("--------------------------------------- \nPassword must contain at least 8 characters!\n--------------------------------------- \n", 20, COLOR_ERROR);
+        else {
+            typeEffect("Confirm Password: ", 20, COLOR_PROMPT);
+            getline(cin, confirmPassword);
+        }
+        if (password != confirmPassword)
+            typeEffect("--------------------------------------- \nPasswords do not match. Please try again.\n--------------------------------------- \n", 20, COLOR_ERROR);
+    } while (password.empty() || password.length() < 8 || password != confirmPassword);
+
+    typeEffect("Gender: ", 20, COLOR_PROMPT); cin >> gender;
+    typeEffect("Age: ", 20, COLOR_PROMPT);
+    while (!(cin >> age) || age <= 0 || age > 100) {
+        typeEffect("Invalid age. Try again: ", 20, COLOR_ERROR);
+        cin.clear(); cin.ignore(1000, '\n');
+    }
+    typeEffect("Telephone: ", 20, COLOR_PROMPT); cin >> tel;
+    typeEffect("Country: ", 20, COLOR_PROMPT); cin >> country;
+    typeEffect("Address: ", 20, COLOR_PROMPT); cin.ignore(); getline(cin, address);
+    clearScreen();
+}
+
+void User::saveInfo(const string& filename) {
+    fstream file(filename, ios::app);
+    file << id << "," << name << "," << gender << "," << age << ","
+         << tel << "," << country << "," << address << "," << password << endl;
+    file.close();
+}
+
+class Doctor : public Person {
+private:
+    string degree, specialty;
+    int tel, fee;
+    string confirmPassword;
+    static int idCounter;
+
+public:
+    Doctor() : tel(0), fee(0) {
+        id = ++idCounter;
+    }
+
+    static void loadLastID() {
+        idCounter = FileManager::getLastID("Doctors.csv");
+    }
+
+    void fillInfo() override;
+    void saveInfo(const string& filename) override;
+};
+
+int Doctor::idCounter = 0;
+
+void Doctor::fillInfo() {
+    clearScreen();
+    drawBorder(40);
+    typeEffect("     Doctor Registration     \n", 30, COLOR_TITLE);
+    drawBorder(40);
+    typeEffect("\nPlease fill in your information...\n\n", 20, COLOR_PROMPT);
+
+    do {
+        typeEffect("Username: ", 20, COLOR_PROMPT);
+        getline(cin, name);
+        if (name.empty())
+            typeEffect("------------------------- \nUsername required.\n------------------------- \n", 20, COLOR_ERROR);
+        else if (name.length() < 8 || name.length() > 100)
+            typeEffect("------------------------- \nInvalid username! Must be 8-100 characters.\n------------------------- \n", 20, COLOR_ERROR);
+    } while (name.empty() || name.length() < 8 || name.length() > 100);
+
+    do {
+        typeEffect("Password: ", 20, COLOR_PROMPT);
+        getline(cin, password);
+        if (password.empty())
+            typeEffect("------------ \nPassword required!\n------------ \n", 20, COLOR_ERROR);
+        else if (password.length() < 8)
+            typeEffect("--------------------------------------- \nPassword must contain at least 8 characters!\n--------------------------------------- \n", 20, COLOR_ERROR);
+        else {
+            typeEffect("Confirm Password: ", 20, COLOR_PROMPT);
+            getline(cin, confirmPassword);
+        }
+        if (password != confirmPassword)
+            typeEffect("--------------------------------------- \nPasswords do not match. Please try again.\n--------------------------------------- \n", 20, COLOR_ERROR);
+    } while (password.empty() || password.length() < 8 || password != confirmPassword);
+
+    typeEffect("Degree Title: ", 20, COLOR_PROMPT); cin >> degree;
+    typeEffect("Medical Specialty: ", 20, COLOR_PROMPT); cin >> specialty;
+    typeEffect("Telephone: ", 20, COLOR_PROMPT); cin >> tel;
+    typeEffect("Booking Price: ", 20, COLOR_PROMPT); cin >> fee;
+    typeEffect("Address: ", 20, COLOR_PROMPT); cin.ignore(); getline(cin, address);
+    clearScreen();
+}
+
+void Doctor::saveInfo(const string& filename) {
+    fstream file(filename, ios::app);
+    file << id << "," << name << "," << degree << "," << specialty << ","
+         << tel << "," << fee << "," << address << "," << password << endl;
+    file.close();
+}
+
+class App {
+public:
+    string userLog, passLog;
+
+    void userLogin();
+    void doctorLogin();
+};
+
+void App::userLogin() {
+    clearScreen();
+    drawBorder(40);
+    typeEffect("     User Login     \n", 30, COLOR_TITLE);
+    drawBorder(40);
+    typeEffect("\nPlease fill in your information...\n\n", 20, COLOR_PROMPT);
+
+    do {
+        typeEffect("Username: ", 20, COLOR_PROMPT);
+        getline(cin, userLog);
+        if (userLog.empty())
+            typeEffect("------------------------- \nUsername required.\n------------------------- \n", 20, COLOR_ERROR);
+        else if (userLog.length() < 8 || userLog.length() > 100)
+            typeEffect("------------------------- \nInvalid username! Must be 8-100 characters.\n------------------------- \n", 20, COLOR_ERROR);
+    } while (userLog.empty() || userLog.length() < 8 || userLog.length() > 100);
+
+    do {
+        typeEffect("Password: ", 20, COLOR_PROMPT);
+        getline(cin, passLog);
+        if (passLog.empty())
+            typeEffect("------------ \nPassword required!\n------------ \n", 20, COLOR_ERROR);
+        else if (passLog.length() < 8)
+            typeEffect("--------------------------------------- \nPassword must contain at least 8 characters!\n--------------------------------------- \n", 20, COLOR_ERROR);
+    } while (passLog.empty() || passLog.length() < 8);
+
+    if (FileManager::checkLogin("users.csv", userLog, passLog)) {
+        typeEffect("\nLogin Successful!\n", 30, COLOR_SUCCESS);
+        this_thread::sleep_for(chrono::milliseconds(1500));
+        clearScreen();
+        UserDashboard(userLog);
+    } else {
+        typeEffect("\nInvalid username or password.\n", 30, COLOR_ERROR);
+        this_thread::sleep_for(chrono::milliseconds(1500));
+    }
+}
+
+void App::doctorLogin() {
+    clearScreen();
+    drawBorder(40);
+    typeEffect("     Doctor Login     \n", 30, COLOR_TITLE);
+    drawBorder(40);
+    typeEffect("\nPlease fill in your information...\n\n", 20, COLOR_PROMPT);
+
+    do {
+        typeEffect("Username: ", 20, COLOR_PROMPT);
+        getline(cin, userLog);
+        if (userLog.empty())
+            typeEffect("------------------------- \nUsername required.\n------------------------- \n", 20, COLOR_ERROR);
+        else if (userLog.length() < 8 || userLog.length() > 100)
+            typeEffect("------------------------- \nInvalid username! Must be 8-100 characters.\n------------------------- \n", 20, COLOR_ERROR);
+    } while (userLog.empty() || userLog.length() < 8 || userLog.length() > 100);
+
+    do {
+        typeEffect("Password: ", 20, COLOR_PROMPT);
+        getline(cin, passLog);
+        if (passLog.empty())
+            typeEffect("------------ \nPassword required!\n------------ \n", 20, COLOR_ERROR);
+        else if (passLog.length() < 8)
+            typeEffect("--------------------------------------- \nPassword must contain at least 8 characters!\n--------------------------------------- \n", 20, COLOR_ERROR);
+    } while (passLog.empty() || passLog.length() < 8);
+
+    if (FileManager::checkLogin("Doctors.csv", userLog, passLog)) {
+        typeEffect("\nLogin Successful!\n", 30, COLOR_SUCCESS);
+        this_thread::sleep_for(chrono::milliseconds(1500));
+        clearScreen();
+        // Placeholder for DoctorDashboard
+        typeEffect("Doctor Dashboard (Coming Soon)!\n", 30, COLOR_PROMPT);
+        this_thread::sleep_for(chrono::milliseconds(1500));
+    } else {
+        typeEffect("\nInvalid username or password.\n", 30, COLOR_ERROR);
+        this_thread::sleep_for(chrono::milliseconds(1500));
+    }
+}
+
+void typeEffect(const string& text, int delay, int color) {
+    setColor(color);
+    for (char c : text) {
+        cout << c << flush;
+        this_thread::sleep_for(chrono::milliseconds(delay));
+    }
+    setColor(COLOR_DEFAULT);
+}
+
+void clearScreen() {
+    system("cls");
+}
+
+void drawBorder(int width, char borderChar) {
+    setColor(COLOR_TITLE);
+    for (int i = 0; i < width; ++i) {
+        cout << borderChar;
+    }
+    cout << endl;
+    setColor(COLOR_DEFAULT);
+}
+
+void welcomeScreen() {
+    clearScreen();
+    drawBorder(40);
+    typeEffect("     Welcome to Doctor Booking App     \n", 40, COLOR_TITLE);
+    drawBorder(40);
+    this_thread::sleep_for(chrono::milliseconds(1500));
+}
+
+void loadingDots() {
+    typeEffect("Loading", 100, COLOR_PROMPT);
+    for (int i = 0; i < 3; ++i) {
+        setColor(COLOR_PROMPT);
+        cout << "." << flush;
+        this_thread::sleep_for(chrono::milliseconds(400));
+    }
+    setColor(COLOR_DEFAULT);
+    cout << "\n";
+}
+
+void progressBarAnimation(int length, int delay) {
+    typeEffect("Initializing: [", 30, COLOR_PROMPT);
+    for (int i = 0; i < length; ++i) {
+        setColor(COLOR_SUCCESS);
+        cout << "|" << flush;
+        this_thread::sleep_for(chrono::milliseconds(delay));
+    }
+    setColor(COLOR_PROMPT);
+    cout << "] Done!\n";
+    setColor(COLOR_DEFAULT);
+    this_thread::sleep_for(chrono::milliseconds(500));
+}
+
+void DisplayUserInfo(const string& username) {
+    vector<string> userInfo = FileManager::getUserInfo(username);
+    if (!userInfo.empty()) {
+        clearScreen();
+        drawBorder(40);
+        typeEffect("     Your Profile     \n", 30, COLOR_TITLE);
+        drawBorder(40);
+        typeEffect("Username: " + userInfo[1] + "\n", 20, COLOR_DEFAULT);
+        typeEffect("Gender: " + userInfo[2] + "\n", 20, COLOR_DEFAULT);
+        typeEffect("Age: " + userInfo[3] + "\n", 20, COLOR_DEFAULT);
+        typeEffect("Telephone: " + userInfo[4] + "\n", 20, COLOR_DEFAULT);
+        typeEffect("Country: " + userInfo[5] + "\n", 20, COLOR_DEFAULT);
+        typeEffect("Address: " + userInfo[6] + "\n", 20, COLOR_DEFAULT);
+        drawBorder(40);
+        typeEffect("\nPress Enter to return to dashboard...\n", 20, COLOR_PROMPT);
+        cin.get();
+    } else {
+        typeEffect("Error: User profile not found.\n", 30, COLOR_ERROR);
+        this_thread::sleep_for(chrono::milliseconds(1500));
+    }
+}
+
+void UserDashboard(const string& username) {
+    int choice;
+    do {
+        clearScreen();
+        drawBorder(40);
+        typeEffect("     Welcome, " + username + "!     \n", 30, COLOR_TITLE);
+        drawBorder(40);
+        cout << endl;
+        typeEffect("1. View Profile\n", 20, COLOR_DEFAULT);
+        typeEffect("2. View Available Doctors\n", 20, COLOR_DEFAULT);
+        typeEffect("3. Log Out\n", 20, COLOR_DEFAULT);
+        drawBorder(40);
+        typeEffect("Enter your choice (1-3): ", 20, COLOR_PROMPT);
+
+        while (!(cin >> choice)) {
+            typeEffect("Invalid input. Please enter a number (1-3): ", 20, COLOR_ERROR);
+            cin.clear();
+            cin.ignore(1000, '\n');
+        }
+        cin.ignore();
+
+        switch (choice) {
+            case 1:
+                DisplayUserInfo(username);
+                break;
+            case 2:
+                clearScreen();
+                drawBorder(40);
+                typeEffect("Available Doctors (Coming Soon)!\n", 30, COLOR_PROMPT);
+                drawBorder(40);
+                typeEffect("\nPress Enter to return to dashboard...\n", 20, COLOR_PROMPT);
+                cin.get();
+                break;
+            case 3:
+                clearScreen();
+                drawBorder(40);
+                typeEffect("Logging out... Goodbye, " + username + "!\n", 30, COLOR_SUCCESS);
+                drawBorder(40);
+                this_thread::sleep_for(chrono::milliseconds(1500));
+                return;
+            default:
+                typeEffect("Invalid choice. Please try again.\n", 30, COLOR_ERROR);
+                this_thread::sleep_for(chrono::milliseconds(1000));
+        }
+    } while (true);
+}
+
+void MainMenu() {
+    int choice;
+    do {
+        clearScreen();
+        drawBorder(40);
+        typeEffect("          Main Menu          \n", 30, COLOR_TITLE);
+        drawBorder(40);
+        cout << endl;
+        typeEffect("1. User Login\n", 20, COLOR_DEFAULT);
+        typeEffect("2. Doctor Login\n", 20, COLOR_DEFAULT);
+        typeEffect("3. First-time User Registration\n", 20, COLOR_DEFAULT);
+        typeEffect("4. First-time Doctor Registration\n", 20, COLOR_DEFAULT);
+        typeEffect("5. Exit\n", 20, COLOR_DEFAULT);
+        drawBorder(40);
+        typeEffect("Enter your choice (1-5): ", 20, COLOR_PROMPT);
+
+        while (!(cin >> choice)) {
+            typeEffect("Invalid input. Please enter a number (1-5): ", 20, COLOR_ERROR);
+            cin.clear();
+            cin.ignore(1000, '\n');
+        }
+        cin.ignore();
+
+        User user;
+        Doctor doctor;
+        App login;
+
+        switch (choice) {
+            case 1:
+                login.userLogin();
+                break;
+            case 2:
+                login.doctorLogin();
+                break;
+            case 3:
+                user.fillInfo();
+                user.saveInfo("users.csv");
+                drawBorder(40);
+                typeEffect("Registration successful! Please log in.\n", 30, COLOR_SUCCESS);
+                this_thread::sleep_for(chrono::milliseconds(2000));
+                break;
+            case 4:
+                doctor.fillInfo();
+                doctor.saveInfo("Doctors.csv");
+                drawBorder(40);
+                typeEffect("Registration successful! Please log in.\n", 30, COLOR_SUCCESS);
+                this_thread::sleep_for(chrono::milliseconds(2000));
+                break;
+            case 5:
+                clearScreen();
+                drawBorder(40);
+                typeEffect("Exiting Doctor Booking App. Goodbye!\n", 30, COLOR_TITLE);
+                drawBorder(40);
+                this_thread::sleep_for(chrono::milliseconds(1000));
+                return;
+            default:
+                typeEffect("Invalid choice. Please try again.\n", 30, COLOR_ERROR);
+                this_thread::sleep_for(chrono::milliseconds(1000));
+        }
+    } while (true);
+}
+
+int main() {
+    welcomeScreen();
+    loadingDots();
+    progressBarAnimation();
+    clearScreen();
+    User::loadLastID();
+    Doctor::loadLastID();
+    MainMenu();
+    return 0;
+}

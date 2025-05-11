@@ -1,0 +1,3 @@
+D:/projects/File.c++/Doctor Booking App/cmake-build-debug/CMakeFiles/Newcommers.dir
+D:/projects/File.c++/Doctor Booking App/cmake-build-debug/CMakeFiles/edit_cache.dir
+D:/projects/File.c++/Doctor Booking App/cmake-build-debug/CMakeFiles/rebuild_cache.dir

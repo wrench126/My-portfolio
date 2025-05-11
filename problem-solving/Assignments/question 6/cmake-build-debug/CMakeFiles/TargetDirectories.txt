@@ -1,0 +1,3 @@
+D:/projects/File.c++/assign#2/question 6/cmake-build-debug/CMakeFiles/qution_6.dir
+D:/projects/File.c++/assign#2/question 6/cmake-build-debug/CMakeFiles/edit_cache.dir
+D:/projects/File.c++/assign#2/question 6/cmake-build-debug/CMakeFiles/rebuild_cache.dir
