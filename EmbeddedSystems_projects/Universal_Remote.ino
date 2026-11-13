@@ -1,3 +1,12 @@
+// ============================================================================
+//  PROJECT: Universal ESP32 IR Remote (v2.1.0 - Non-Blocking FSM Edition)
+//  FEATURES:
+//    - 100% Non-Blocking Finite State Machine (Zero delay() calls)
+//    - Standard Protocols + Raw IR Capture (AC Remotes & Elevator Programmers)
+//    - 50-Device Brute-Force Auto-Scan with Collision Skip & Target Button Select
+//    - Continuous Hold-Repeat (every 500ms) & Ultra-Low-Power Deep Sleep (60s)
+// ============================================================================
+
 #include <Arduino.h>
 #include <IRremoteESP8266.h>
 #include <IRrecv.h>
@@ -6,70 +15,76 @@
 #include <Preferences.h>
 #include <esp_sleep.h>
 
-// --- Pin Definitions ---
-const uint16_t kRecvPin = 15;     // IR Receiver (GPIO 15)
-const uint16_t kSendPin = 14;     // IR Transmitter via 2N2222 (GPIO 14)
-const int LED_GREEN     = 13;     // Status / TX Indicator (GPIO 13)
-const int LED_RED_LAMP  = 25;     // Record / Auto-Scan Indicator (GPIO 25)
-const int BTN_REC_PIN   = 33;     // Short: Learn | Hold 2.5s: Auto-Scan | Wakeup Pin
+// ============================================================================
+//  SECTION 1: HARDWARE & PIN CONFIGURATION
+// ============================================================================
+const uint16_t kRecvPin      = 15;  // IR Receiver Sensor (GPIO 15)
+const uint16_t kSendPin      = 14;  // IR LED Driver via 2N2222 NPN + 390R (GPIO 14)
+const int      LED_GREEN     = 13;  // Green LED: TX Activity & Confirmation (GPIO 13)
+const int      LED_RED_LAMP  = 25;  // Red LED: Solid = Learn Mode | Blink = Brute Force
+const int      BTN_REC_PIN   = 33;  // Short: Learn | Hold 2.5s: Brute Force | RTC Wakeup
 
-// --- Timing & Buffer Constants ---
-const unsigned long DEBOUNCE_DELAY     = 50;     // Debounce filter (ms)
-const unsigned long REPEAT_INTERVAL    = 500;    // 0.5s continuous hold repeat interval (ms)
-const unsigned long LONG_PRESS_TIME    = 2500;   // 2.5s hold to trigger Auto-Scan (ms)
-const unsigned long SCAN_INTERVAL      = 650;    // Interval between Auto-Scan shots (ms)
-const unsigned long INACTIVITY_TIMEOUT = 60000;  // 1 minute idle before Deep Sleep (ms)
-const unsigned long MODE_TIMEOUT       = 20000;  // 20s safety timeout for Record/Scan modes
+// ============================================================================
+//  SECTION 2: TIMING & BUFFER CONSTANTS
+// ============================================================================
+const unsigned long DEBOUNCE_DELAY     = 50;     // Button debounce filter (ms)
+const unsigned long REPEAT_INTERVAL    = 500;    // Continuous hold repeat interval (0.5s)
+const unsigned long LONG_PRESS_TIME    = 2500;   // Hold duration to enter Brute Force (2.5s)
+const unsigned long SCAN_INTERVAL      = 650;    // Time between Brute Force POWER shots (ms)
+const unsigned long SCAN_BLINK_RATE    = 250;    // Red LED blink speed during Brute Force (ms)
+const unsigned long INACTIVITY_TIMEOUT = 60000;  // Idle timeout before Deep Sleep (1 minute)
+const unsigned long MODE_TIMEOUT       = 25000;  // Safety timeout for Learn/Select states (25s)
 
-// Expanded Capture Buffer for AC Remotes & Elevator Programmers
+// Expanded IR Capture Buffers (Supports long AC & Elevator Programmer frames)
 const uint16_t kCaptureBufferSize = 1024;
-const uint8_t  kTimeout           = 50;     // 50ms packet end timeout for long AC frames
+const uint8_t  kTimeout           = 50;     // 50ms packet end timeout
 const uint16_t kMaxRawLen         = 350;    // Max raw pulses stored per button in NVS
 
-// System Finite State Machine (FSM)
+// ============================================================================
+//  SECTION 3: DATA STRUCTURES & FINITE STATE MACHINE (FSM)
+// ============================================================================
 enum SystemState {
-  STATE_IDLE,
-  STATE_RECORD_SELECT_BTN,
-  STATE_RECORD_WAIT_IR,
-  STATE_AUTOSCAN_RUNNING
+  STATE_IDLE,                 // Normal remote operation & sleep monitoring
+  STATE_RECORD_SELECT_BTN,    // Learn Mode (Solid Red): Waiting for target button
+  STATE_RECORD_WAIT_IR,       // Learn Mode (Solid Red): Waiting for IR signal
+  STATE_AUTOSCAN_RUNNING,     // Brute Force (Blinking Red): Testing POWER codes
+  STATE_AUTOSCAN_SELECT_BTN   // Brute Force (Blinking Red): Assigning matched code to a button
 };
 
-SystemState currentState = STATE_IDLE;
-
-// Button Configuration & State Structure
 struct RemoteButton {
-  const char* name;
-  int pin;
-  bool useInternalPullup;
-  const char* keyPrefix;          // NVS prefix (<= 15 chars)
-  
-  // Standard Protocol Storage
-  uint64_t code;
-  decode_type_t protocol;
-  uint16_t bits;
+  const char*   name;
+  int           pin;
+  bool          useInternalPullup;
+  const char*   keyPrefix;          // NVS namespace key prefix (max 15 chars)
 
-  // Raw IR Storage (For AC Remotes & Elevator Programmers)
-  bool isRaw;
-  uint16_t rawLen;
-  uint16_t rawData[kMaxRawLen];
+  // Standard Protocol Storage
+  uint64_t      code;
+  decode_type_t protocol;
+  uint16_t      bits;
+
+  // Raw IR Storage (For AC & Elevator Remotes)
+  bool          isRaw;
+  uint16_t      rawLen;
+  uint16_t      rawData[kMaxRawLen];
 
   // Non-blocking Debounce & Hold-Repeat State
-  bool lastState;
-  bool lastReading;
+  bool          lastState;
+  bool          lastReading;
   unsigned long lastDebounceTime;
   unsigned long lastRepeatTime;
 };
 
-// Full Device Profile Structure
-// codes[6]: [0]=UP(CH+), [1]=DOWN(CH-), [2]=LEFT(VOL-), [3]=RIGHT(VOL+), [4]=EXTRA1(POWER), [5]=EXTRA2(MUTE)
+// Device Profile: [0]=UP(CH+), [1]=DOWN(CH-), [2]=LEFT(VOL-), [3]=RIGHT(VOL+), [4]=EXTRA1(POWER), [5]=EXTRA2(MUTE)
 struct DeviceProfile {
-  const char* brand;
+  const char*   brand;
   decode_type_t protocol;
-  uint16_t bits;
-  uint64_t codes[6];
+  uint16_t      bits;
+  uint64_t      codes[6];
 };
 
-// Database of 50 TVs & Receivers stored in Flash (const)
+// ============================================================================
+//  SECTION 4: 50-DEVICE INFRARED DATABASE (STORED IN FLASH)
+// ============================================================================
 const DeviceProfile deviceDatabase[] = {
   {"Samsung TV",            SAMSUNG,    32, {0xE0E048B7, 0xE0E008F7, 0xE0E0D02F, 0xE0E0E01F, 0xE0E040BF, 0xE0E0F00F}},
   {"LG TV",                 NEC,        32, {0x20DF00FF, 0x20DF807F, 0x20DFC03F, 0x20DF40BF, 0x20DF10EF, 0x20DF906F}},
@@ -125,7 +140,9 @@ const DeviceProfile deviceDatabase[] = {
 
 const int TOTAL_DEVICES = sizeof(deviceDatabase) / sizeof(deviceDatabase[0]);
 
-// Remote Buttons Array
+// ============================================================================
+//  SECTION 5: GLOBAL OBJECTS & RUNTIME VARIABLES
+// ============================================================================
 RemoteButton buttons[] = {
   {"UP",      32, true,  "up",  0, UNKNOWN, 0, false, 0, {0}, HIGH, HIGH, 0, 0},
   {"DOWN",    19, true,  "dn",  0, UNKNOWN, 0, false, 0, {0}, HIGH, HIGH, 0, 0},
@@ -137,33 +154,38 @@ RemoteButton buttons[] = {
 
 const int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 
-// Global Non-Blocking State Variables
-unsigned long lastActivityTime    = 0;
-unsigned long stateStartTime      = 0;
-int recordTargetIndex             = -1;
+SystemState   currentState         = STATE_IDLE;
+unsigned long lastActivityTime     = 0;
+unsigned long stateStartTime       = 0;
+int           recordTargetIndex    = -1;
 
-// Auto-Scan State Variables
-int scanDevIndex                  = -1;
-unsigned long lastScanShotTime    = 0;
-bool waitingForRecRelease         = false;
+// Brute-Force Auto-Scan State
+int           scanDevIndex         = -1;
+unsigned long lastScanShotTime     = 0;
+bool          waitingForRecRelease = false;
 
-// Record Button Debounce State
-bool recLastState                 = HIGH;
-bool recLastReading               = HIGH;
-unsigned long recLastDebounceTime = 0;
-unsigned long recPressStartTime   = 0;
-bool recLongPressHandled          = false;
+// REC Button Debounce State
+bool          recLastState         = HIGH;
+bool          recLastReading       = HIGH;
+unsigned long recLastDebounceTime  = 0;
+unsigned long recPressStartTime    = 0;
+bool          recLongPressHandled  = false;
 
-// Non-Blocking LED Pulse Timers
-unsigned long greenLedOffTime     = 0;
-unsigned long redLedOffTime       = 0;
+// Non-Blocking LED Control Timers
+unsigned long greenLedOffTime      = 0;
+unsigned long redLedOffTime        = 0;
+unsigned long lastRedBlinkTime     = 0;
+bool          redBlinkState        = false;
 
-IRrecv irrecv(kRecvPin, kCaptureBufferSize, kTimeout, true);
-IRsend irsend(kSendPin);
-Preferences pref;
+// Hardware Peripheral Instances
+IRrecv         irrecv(kRecvPin, kCaptureBufferSize, kTimeout, true);
+IRsend         irsend(kSendPin);
+Preferences    pref;
 decode_results results;
 
-// --- Non-Blocking LED Helpers ---
+// ============================================================================
+//  SECTION 6: NON-BLOCKING LED & INPUT DRIVERS
+// ============================================================================
 void pulseGreenLED(unsigned long durationMs) {
   digitalWrite(LED_GREEN, HIGH);
   greenLedOffTime = millis() + durationMs;
@@ -174,24 +196,53 @@ void pulseRedLED(unsigned long durationMs) {
   redLedOffTime = millis() + durationMs;
 }
 
+// Updates LED states cleanly based on active SystemState (Solid vs Blinking)
 void updateLEDs() {
   unsigned long now = millis();
+
+  // 1. Green LED auto-off timer
   if (greenLedOffTime > 0 && now >= greenLedOffTime) {
     digitalWrite(LED_GREEN, LOW);
     greenLedOffTime = 0;
   }
-  if (currentState == STATE_IDLE && redLedOffTime > 0 && now >= redLedOffTime) {
-    digitalWrite(LED_RED_LAMP, LOW);
-    redLedOffTime = 0;
+
+  // 2. Red LED Mode Indicator
+  if (currentState == STATE_RECORD_SELECT_BTN || currentState == STATE_RECORD_WAIT_IR) {
+    // LEARN MODE -> Solid ON
+    digitalWrite(LED_RED_LAMP, HIGH);
+  } 
+  else if (currentState == STATE_AUTOSCAN_RUNNING || currentState == STATE_AUTOSCAN_SELECT_BTN) {
+    // BRUTE FORCE MODE -> Blinking every 250ms
+    if (now - lastRedBlinkTime >= SCAN_BLINK_RATE) {
+      lastRedBlinkTime = now;
+      redBlinkState = !redBlinkState;
+      digitalWrite(LED_RED_LAMP, redBlinkState ? HIGH : LOW);
+    }
+  } 
+  else {
+    // IDLE MODE -> Off (unless temporary warning pulse is active)
+    if (redLedOffTime > 0) {
+      if (now >= redLedOffTime) {
+        digitalWrite(LED_RED_LAMP, LOW);
+        redLedOffTime = 0;
+      }
+    } else {
+      digitalWrite(LED_RED_LAMP, LOW);
+    }
   }
 }
 
-// --- Non-Blocking Button Evaluator (Supports Single Press & 500ms Hold-Repeat) ---
-// Returns: 0 = None, 1 = Initial Press, 2 = Hold Repeat (every 500ms)
+// Evaluates button press & 500ms continuous hold-repeat
+// Returns: 0 = None | 1 = Initial Press | 2 = Hold Repeat (every 500ms)
 int checkButtonAction(RemoteButton &btn) {
   bool reading = digitalRead(btn.pin);
   int action = 0;
   unsigned long now = millis();
+
+  // Keep system awake continuously while ANY button is physically held down
+  if (reading == LOW) {
+    lastActivityTime = now;
+  }
 
   if (reading != btn.lastReading) {
     btn.lastDebounceTime = now;
@@ -206,7 +257,7 @@ int checkButtonAction(RemoteButton &btn) {
         lastActivityTime = now;
       }
     } else if (btn.lastState == LOW) {
-      // Button is being held down -> trigger every 500ms
+      // Trigger repeat every 500ms while held down
       if (now - btn.lastRepeatTime >= REPEAT_INTERVAL) {
         action = 2; // Repeat press
         btn.lastRepeatTime = now;
@@ -219,7 +270,9 @@ int checkButtonAction(RemoteButton &btn) {
   return action;
 }
 
-// --- Load Stored Data (Standard + Raw IR) from NVS Flash ---
+// ============================================================================
+//  SECTION 7: NVS FLASH STORAGE MANAGER
+// ============================================================================
 void loadAllButtonsData() {
   pref.begin("ir_remote", true);
   Serial.println("\n--- [Loading Saved IR Profiles from NVS] ---");
@@ -252,7 +305,6 @@ void loadAllButtonsData() {
   Serial.println("--------------------------------------------\n");
 }
 
-// --- Save Single Button (Standard or Raw) to NVS Flash ---
 void saveButtonData(int index) {
   pref.begin("ir_remote", false);
 
@@ -276,7 +328,6 @@ void saveButtonData(int index) {
   Serial.printf("[NVS]: Saved [%s] successfully.\n", buttons[index].name);
 }
 
-// --- Save All 6 Buttons from Auto-Scan ---
 void saveAllButtonsData() {
   pref.begin("ir_remote", false);
 
@@ -293,10 +344,12 @@ void saveAllButtonsData() {
   }
 
   pref.end();
-  Serial.println("[NVS]: All 6 buttons auto-mapped and saved to Flash!");
+  Serial.println("[NVS]: All 6 buttons mapped and saved to Flash!");
 }
 
-// --- Transmit Button Signal (Standard or Raw) ---
+// ============================================================================
+//  SECTION 8: INFRARED TRANSMISSION & POWER MANAGEMENT
+// ============================================================================
 void transmitButton(int idx, bool isRepeat) {
   if (buttons[idx].isRaw && buttons[idx].rawLen > 0) {
     Serial.printf("[TX %s]: Sending RAW Signal [%s] (%d pulses)\n", isRepeat ? "HOLD" : "ONCE", buttons[idx].name, buttons[idx].rawLen);
@@ -314,20 +367,22 @@ void transmitButton(int idx, bool isRepeat) {
   }
 }
 
-// --- Enter Deep Sleep Mode after 1 Minute of Inactivity ---
 void enterDeepSleep() {
-  Serial.println("\n[SLEEP]: 1 minute of inactivity. Entering Deep Sleep...");
+  Serial.println("\n[SLEEP]: 1 minute of inactivity detected. Entering Deep Sleep...");
   Serial.println("[SLEEP]: Press REC button (GPIO 33) to wake up.\n");
   Serial.flush();
 
   digitalWrite(LED_GREEN, LOW);
   digitalWrite(LED_RED_LAMP, LOW);
 
-  // Wake up when BTN_REC (GPIO 33) is pulled LOW
+  // Configure EXT0 Wakeup on RTC GPIO 33 (Active LOW)
   esp_sleep_enable_ext0_wakeup(GPIO_NUM_33, 0);
   esp_deep_sleep_start();
 }
 
+// ============================================================================
+//  SECTION 9: SETUP & MAIN NON-BLOCKING LOOP
+// ============================================================================
 void setup() {
   Serial.begin(115200);
 
@@ -350,19 +405,25 @@ void setup() {
 
   if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
     Serial.println(">>> Woke up from Deep Sleep! <<<");
-    pulseGreenLED(200);
+    pulseGreenLED(250);
   }
 
-  Serial.println(">>> Universal IR Remote v2.0.0 Ready (Non-Blocking + Raw IR + Auto-Scan) <<<");
+  Serial.println(">>> Universal IR Remote v2.1.0 Ready <<<");
 }
 
 void loop() {
   unsigned long now = millis();
   updateLEDs();
 
-  // --- 1. Handle REC Button (Short Press vs 2.5s Long Press) ---
+  // --------------------------------------------------------------------------
+  //  A. REC BUTTON HANDLER (Short Press = Learn | Hold 2.5s = Brute Force)
+  // --------------------------------------------------------------------------
   bool recReading = digitalRead(BTN_REC_PIN);
-  bool recJustPressed = false;
+
+  // Prevent Deep Sleep while REC button is held down
+  if (recReading == LOW) {
+    lastActivityTime = now;
+  }
 
   if (recReading != recLastReading) {
     recLastDebounceTime = now;
@@ -376,68 +437,87 @@ void loop() {
       if (recLastState == LOW) {
         recPressStartTime = now;
         recLongPressHandled = false;
-        recJustPressed = true;
       } else {
-        // Released before 2.5s -> Handle Short Press
+        // Button released before 2.5s -> Handle Short Press
         if (!recLongPressHandled) {
           if (currentState == STATE_IDLE) {
             currentState = STATE_RECORD_SELECT_BTN;
             stateStartTime = now;
-            digitalWrite(LED_RED_LAMP, HIGH);
-            Serial.println("\n[RECORD MODE]: Press target button to program (or REC to cancel)...");
-          } else {
-            // Cancel any active mode
+            Serial.println("\n[LEARN MODE - Red LED Solid]: Press target button to program (or REC to cancel)...");
+          } 
+          else if (currentState == STATE_AUTOSCAN_SELECT_BTN) {
+            // User chose to auto-map ALL 6 buttons for the confirmed device
+            for (int i = 0; i < NUM_BUTTONS; i++) {
+              buttons[i].isRaw    = false;
+              buttons[i].rawLen   = 0;
+              buttons[i].code     = deviceDatabase[scanDevIndex].codes[i];
+              buttons[i].protocol = deviceDatabase[scanDevIndex].protocol;
+              buttons[i].bits     = deviceDatabase[scanDevIndex].bits;
+            }
+            saveAllButtonsData();
+            Serial.printf("\n>>> AUTO-MAPPED ALL 6 BUTTONS FOR: [%s] <<<\n", deviceDatabase[scanDevIndex].brand);
             currentState = STATE_IDLE;
-            digitalWrite(LED_RED_LAMP, LOW);
+            pulseGreenLED(1000);
+          } 
+          else {
+            // Cancel any active mode and return to IDLE
+            currentState = STATE_IDLE;
             Serial.println("[CANCELLED]: Returned to normal mode.");
           }
         }
       }
     }
 
-    // Check 2.5s Hold -> Trigger Full Auto-Scan
+    // Trigger Brute Force Auto-Scan after 2.5s hold
     if (recLastState == LOW && !recLongPressHandled && (now - recPressStartTime >= LONG_PRESS_TIME)) {
-      recLongPressHandled = true;
-      currentState = STATE_AUTOSCAN_RUNNING;
-      scanDevIndex = -1;
-      lastScanShotTime = 0;
+      recLongPressHandled  = true;
+      currentState         = STATE_AUTOSCAN_RUNNING;
+      scanDevIndex         = -1;
+      lastScanShotTime     = 0;
       waitingForRecRelease = true;
-      digitalWrite(LED_RED_LAMP, HIGH);
-      Serial.println("\n=== [AUTO-SCAN STARTED (Testing POWER)] ===");
-      Serial.println("Controls during scan: [UP]=Confirm & Save | [DOWN]=Skip Chinese/Wrong Match | [REC]=Cancel");
+      Serial.println("\n=== [BRUTE FORCE STARTED - Red LED Blinking] ===");
+      Serial.println("Testing POWER codes: [UP]=Confirm Match | [DOWN]=Skip Collision | [REC]=Cancel");
     }
   }
   recLastReading = recReading;
 
-  // --- 2. State Machine Execution (Zero Blocking) ---
+  // --------------------------------------------------------------------------
+  //  B. FINITE STATE MACHINE EXECUTION (100% NON-BLOCKING)
+  // --------------------------------------------------------------------------
   switch (currentState) {
 
-    // =========================================================
-    // STATE 0: NORMAL REMOTE OPERATION
-    // =========================================================
+    // ========================================================================
+    // STATE 0: NORMAL OPERATION (IDLE)
+    // ========================================================================
     case STATE_IDLE: {
+      bool anyButtonPressed = (recReading == LOW);
+
       for (int i = 0; i < NUM_BUTTONS; i++) {
+        if (digitalRead(buttons[i].pin) == LOW) {
+          anyButtonPressed = true;
+        }
         int action = checkButtonAction(buttons[i]);
         if (action == 1 || action == 2) {
           transmitButton(i, (action == 2));
         }
       }
 
-      // Check 1-Minute Inactivity for Deep Sleep
-      if (now - lastActivityTime >= INACTIVITY_TIMEOUT) {
+      // Only enter Deep Sleep if completely idle AND no buttons are held down
+      if (!anyButtonPressed && (now - lastActivityTime >= INACTIVITY_TIMEOUT)) {
         enterDeepSleep();
       }
       break;
     }
 
-    // =========================================================
-    // STATE 1: RECORD MODE - WAITING FOR TARGET BUTTON
-    // =========================================================
+    // ========================================================================
+    // STATE 1: LEARN MODE - SELECT TARGET BUTTON (SOLID RED LED)
+    // ========================================================================
     case STATE_RECORD_SELECT_BTN: {
+      lastActivityTime = now; // Never sleep during active mode
+
       if (now - stateStartTime >= MODE_TIMEOUT) {
         currentState = STATE_IDLE;
-        digitalWrite(LED_RED_LAMP, LOW);
-        Serial.println("[TIMEOUT]: Record mode cancelled.");
+        Serial.println("[TIMEOUT]: Learn mode cancelled.");
         break;
       }
 
@@ -454,19 +534,19 @@ void loop() {
       break;
     }
 
-    // =========================================================
-    // STATE 2: RECORD MODE - CAPTURING STANDARD OR RAW IR SIGNAL
-    // =========================================================
+    // ========================================================================
+    // STATE 2: LEARN MODE - CAPTURE STANDARD OR RAW IR (SOLID RED LED)
+    // ========================================================================
     case STATE_RECORD_WAIT_IR: {
+      lastActivityTime = now; // Never sleep during active mode
+
       if (now - stateStartTime >= MODE_TIMEOUT) {
         currentState = STATE_IDLE;
-        digitalWrite(LED_RED_LAMP, LOW);
         Serial.println("[TIMEOUT]: No IR signal received.");
         break;
       }
 
       if (irrecv.decode(&results)) {
-        // Ignore NEC repeat codes (0xFFFFFFFFFFFFFFFF)
         if (results.repeat) {
           irrecv.resume();
           break;
@@ -474,7 +554,7 @@ void loop() {
 
         uint16_t rawLen = getCorrectedRawLength(&results);
 
-        // Save as RAW if protocol is UNKNOWN, AC, or long packet (>64 bits)
+        // Save as RAW if UNKNOWN, AC State, or long packet (>70 pulses)
         if (results.decode_type == UNKNOWN || hasACState(results.decode_type) || rawLen > 70) {
           uint16_t* rawPtr = resultToRawArray(&results);
           uint16_t copyLen = (rawLen > kMaxRawLen) ? kMaxRawLen : rawLen;
@@ -485,7 +565,7 @@ void loop() {
           buttons[recordTargetIndex].code     = 0;
           memcpy(buttons[recordTargetIndex].rawData, rawPtr, copyLen * sizeof(uint16_t));
 
-          delete[] rawPtr; // Free heap memory immediately
+          delete[] rawPtr;
           Serial.printf("[CAPTURED RAW]: %d pulses saved for [%s]!\n", copyLen, buttons[recordTargetIndex].name);
         } else {
           // Standard Decoded Protocol
@@ -503,18 +583,18 @@ void loop() {
         irrecv.resume();
 
         currentState = STATE_IDLE;
-        digitalWrite(LED_RED_LAMP, LOW);
         pulseGreenLED(800);
         lastActivityTime = now;
       }
       break;
     }
 
-    // =========================================================
-    // STATE 3: AUTO-SCAN (TESTS POWER + COLLISION RESOLUTION)
-    // =========================================================
+    // ========================================================================
+    // STATE 3: BRUTE FORCE - SCANNING POWER CODES (BLINKING RED LED)
+    // ========================================================================
     case STATE_AUTOSCAN_RUNNING: {
-      // Wait for user to release BTN_REC after 2.5s trigger
+      lastActivityTime = now; // Never sleep during Brute Force scan
+
       if (waitingForRecRelease) {
         if (digitalRead(BTN_REC_PIN) == HIGH) {
           waitingForRecRelease = false;
@@ -526,16 +606,13 @@ void loop() {
       if (now - lastScanShotTime >= SCAN_INTERVAL) {
         lastScanShotTime = now;
         scanDevIndex++;
-        lastActivityTime = now;
 
         if (scanDevIndex >= TOTAL_DEVICES) {
           currentState = STATE_IDLE;
-          digitalWrite(LED_RED_LAMP, LOW);
-          Serial.println("[AUTO-SCAN]: Reached end of 50-device database.");
+          Serial.println("[BRUTE FORCE]: Reached end of 50-device database.");
           break;
         }
 
-        // Index 4 in codes[] is POWER
         Serial.printf("[%d/%d] Testing POWER: %-22s (0x", scanDevIndex + 1, TOTAL_DEVICES, deviceDatabase[scanDevIndex].brand);
         serialPrintUint64(deviceDatabase[scanDevIndex].codes[4], HEX);
         Serial.println(")");
@@ -546,28 +623,55 @@ void loop() {
                     deviceDatabase[scanDevIndex].bits);
       }
 
-      // Evaluate user feedback buttons during scan
+      // Evaluate user feedback during scan
       if (scanDevIndex >= 0) {
-        // UP Button (Index 0) -> CONFIRM & SAVE ALL 6 BUTTONS
+        // UP Button (Index 0) -> Device responded! Ask user which button to assign
         if (checkButtonAction(buttons[0]) == 1) {
-          for (int i = 0; i < NUM_BUTTONS; i++) {
-            buttons[i].isRaw    = false;
-            buttons[i].rawLen   = 0;
-            buttons[i].code     = deviceDatabase[scanDevIndex].codes[i];
-            buttons[i].protocol = deviceDatabase[scanDevIndex].protocol;
-            buttons[i].bits     = deviceDatabase[scanDevIndex].bits;
-          }
-          saveAllButtonsData();
-          Serial.printf("\n>>> CONFIRMED & LOCKED: [%s] <<<\n", deviceDatabase[scanDevIndex].brand);
+          currentState = STATE_AUTOSCAN_SELECT_BTN;
+          stateStartTime = now;
+          Serial.printf("\n>>> MATCH FOUND: [%s] <<<\n", deviceDatabase[scanDevIndex].brand);
+          Serial.println("Which button do you want to save this POWER code to?");
+          Serial.println(" -> Press ANY target button (UP/DOWN/LEFT/RIGHT/EXTRA1/EXTRA2) to save to that button only.");
+          Serial.println(" -> OR press [REC] to auto-map ALL 6 buttons of this device!");
+        }
+        // DOWN Button (Index 1) -> Skip collision & continue scanning
+        else if (checkButtonAction(buttons[1]) == 1) {
+          Serial.printf("[SKIPPED]: Ignoring [%s]. Continuing scan...\n", deviceDatabase[scanDevIndex].brand);
+          lastScanShotTime = 0; // Fire next code immediately
+        }
+      }
+      break;
+    }
+
+    // ========================================================================
+    // STATE 4: BRUTE FORCE - ASSIGN MATCHED CODE TO CHOSEN BUTTON
+    // ========================================================================
+    case STATE_AUTOSCAN_SELECT_BTN: {
+      lastActivityTime = now; // Never sleep while choosing button
+
+      if (now - stateStartTime >= MODE_TIMEOUT) {
+        currentState = STATE_IDLE;
+        Serial.println("[TIMEOUT]: Brute force assignment cancelled.");
+        break;
+      }
+
+      // Wait for user to pick which button gets the matched POWER code
+      for (int i = 0; i < NUM_BUTTONS; i++) {
+        if (checkButtonAction(buttons[i]) == 1) {
+          buttons[i].isRaw    = false;
+          buttons[i].rawLen   = 0;
+          buttons[i].code     = deviceDatabase[scanDevIndex].codes[4]; // Save matched POWER code
+          buttons[i].protocol = deviceDatabase[scanDevIndex].protocol;
+          buttons[i].bits     = deviceDatabase[scanDevIndex].bits;
+
+          saveButtonData(i);
+          Serial.printf(">>> SAVED [%s] POWER code to button [%s]! <<<\n",
+                        deviceDatabase[scanDevIndex].brand, buttons[i].name);
 
           currentState = STATE_IDLE;
-          digitalWrite(LED_RED_LAMP, LOW);
           pulseGreenLED(1000);
-        }
-        // DOWN Button (Index 1) -> SKIP COLLISION / CONTINUE TO NEXT MATCH
-        else if (checkButtonAction(buttons[1]) == 1) {
-          Serial.printf("[SKIPPED]: Ignoring [%s] due to code collision. Continuing scan...\n", deviceDatabase[scanDevIndex].brand);
-          lastScanShotTime = 0; // Fire next device immediately
+          lastActivityTime = now;
+          break;
         }
       }
       break;

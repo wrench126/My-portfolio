@@ -1,0 +1,34 @@
+{
+    "configurations": [
+        {
+            "name": "ESP32 Arduino",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "C:/Users/youss/Documents/Arduino/libraries/**",
+                "C:/Users/youss/AppData/Local/Arduino15/packages/esp32/hardware/**",
+                "C:/Users/youss/AppData/Local/Arduino15/packages/esp32/tools/esp32-arduino-libs/**"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}",
+                    "C:/Users/youss/Documents/Arduino/libraries",
+                    "C:/Users/youss/AppData/Local/Arduino15/packages/esp32/hardware",
+                    "C:/Users/youss/AppData/Local/Arduino15/packages/esp32/tools/esp32-arduino-libs"
+                ],
+                "limitSymbolsToIncludedHeaders": true
+            },
+            "defines": [
+                "ARDUINO=10819",
+                "ESP32",
+                "ARDUINO_ESP32_DEV",
+                "ARDUINO_ARCH_ESP32",
+                "CORE_DEBUG_LEVEL=0",
+                "CONFIG_IDF_TARGET_ESP32=1"
+            ],
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-x64"
+        }
+    ],
+    "version": 4
+}
