@@ -566,7 +566,9 @@ void loop() {
           memcpy(buttons[recordTargetIndex].rawData, rawPtr, copyLen * sizeof(uint16_t));
 
           delete[] rawPtr;
-          Serial.printf("[CAPTURED RAW]: %d pulses saved for [%s]!\n", copyLen, buttons[recordTargetIndex].name);
+          Serial.printf("[CAPTURED RAW]: 0x");
+          serialPrintUint64(results.value, HEX);
+          Serial.printf(" saved for [%s]!\n", buttons[recordTargetIndex].name);
         } else {
           // Standard Decoded Protocol
           buttons[recordTargetIndex].isRaw    = false;
