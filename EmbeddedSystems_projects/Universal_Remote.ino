@@ -86,6 +86,8 @@ struct DeviceProfile {
 //  SECTION 4: 50-DEVICE INFRARED DATABASE (STORED IN FLASH)
 // ============================================================================
 const DeviceProfile deviceDatabase[] = {
+ {"Custom TV (0x00FF Type A)", NEC,    32, {0x00FF18E7, 0x00FF9867, 0x00FF58A7, 0x00FFD827, 0x00FF38C7, 0x00FF08F7}},
+  {"Custom TV (0x00FF Type B)", NEC,    32, {0x00FF18E7, 0x00FF4AB5, 0x00FF10EF, 0x00FF5AA5, 0x00FF38C7, 0x00FFB04F}},
   {"Samsung TV",            SAMSUNG,    32, {0xE0E048B7, 0xE0E008F7, 0xE0E0D02F, 0xE0E0E01F, 0xE0E040BF, 0xE0E0F00F}},
   {"LG TV",                 NEC,        32, {0x20DF00FF, 0x20DF807F, 0x20DFC03F, 0x20DF40BF, 0x20DF10EF, 0x20DF906F}},
   {"Sony TV (12-bit)",      SONY,       12, {0x090,      0x890,      0xC90,      0x490,      0xA90,      0x290}},
